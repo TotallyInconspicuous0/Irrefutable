@@ -2,13 +2,18 @@ use std::{fs::OpenOptions, io::Read};
 
 use clap::Parser;
 use lexer::{Lexer, IoBytesCharReader};
+use parser::{TopLevelDecl, ParseResult};
 
 mod lexer;
+mod parser;
 
 #[derive(Parser, Debug)]
 #[clap(version)]
 pub struct Args {
-    source_files: Vec<String>
+    source_files: Vec<String>,
+
+    #[clap(long)]
+    emit_ast: bool
 }
 
 fn main() {
@@ -31,10 +36,32 @@ fn main() {
         let iterator = IoBytesCharReader::new(file.bytes());
         let mut lexer = Lexer::new(iterator);
 
-        while let Some(token) = lexer.peek(0) {
-            println!("{:?}", token);
-
-            lexer.step();
+        let mut top_level = Vec::new();
+        while let Some(_) = lexer.peek(0) {
+            top_level.push(match TopLevelDecl::parse(&mut lexer) {
+                ParseResult::NoMatch => {
+                    eprint!("Unexpected token '{:?}'", lexer.peek(0));
+                    eprintln!(" at {:?}", lexer.peek_span(0));
+                    std::process::exit(1);
+                }
+                ParseResult::Err(err) => {
+                    match err.span() {
+                        Some(span) => {
+                            eprint!("Error at {:?}", span);
+                        }
+                        None => {
+                            eprint!("Unexpected eof");
+                        }
+                    }
+                    eprintln!(", {}", err.message());
+                    std::process::exit(1);
+                }
+                ParseResult::Match(node) => node
+            });
+            
+            if args.emit_ast {
+                println!("{:#?}", top_level.last().unwrap());
+            }
         }
     }
 }

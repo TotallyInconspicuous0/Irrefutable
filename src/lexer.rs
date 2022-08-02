@@ -9,10 +9,12 @@ pub enum Token {
     Arrow,
     OpenParen, CloseParen,
     Add, Sub,
+    NewLine,
+    DoKeyword, ThenKeyword,
     Char(char),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Span {
     pub start: usize,
     pub length: usize
@@ -84,7 +86,11 @@ impl<T: Iterator<Item=char>> Lexer<T> {
             self.chars_offset += 1;
         }
 
-        Some((Token::Identifier(word), Span { start, length: self.chars_offset - start }))
+        Some((match word.as_str() {
+            "do" => Token::DoKeyword,
+            "then" => Token::ThenKeyword,
+            _ => Token::Identifier(word)
+        }, Span { start, length: self.chars_offset - start }))
     }
 
     fn lex_number(&mut self) -> Option<(Token, Span)> {
@@ -101,18 +107,35 @@ impl<T: Iterator<Item=char>> Lexer<T> {
 
     fn lex(&mut self) -> Option<(Token, Span)> {
         while let Some(chr) = self.chars.peek() {
-            if !chr.is_whitespace() {
-                break;
+            if chr.is_whitespace() && *chr != '\n' {
+                self.chars.next();
+                self.chars_offset += 1;
+                continue;
             }
 
-            self.chars.next();
-            self.chars_offset += 1;
+            if *chr == '#' {
+                while let Some(chr) = self.chars.peek() {
+                    if *chr == '\n' {
+                        break
+                    }
+
+                    self.chars.next();
+                }
+                continue;
+            }
+
+            break;
         }
 
         match self.chars.peek() {
             None => None,
             Some('a'..='z' | 'A'..='Z' | '_') => self.lex_ident(),
             Some('0'..='9') => self.lex_number(),
+            Some('\n') => {
+                self.chars_offset += 1;
+                self.chars.next();
+                Some((Token::NewLine, Span { start: self.chars_offset - 1, length: 1 }))
+            }
             Some('=') => {
                 self.chars_offset += 1;
                 self.chars.next();
@@ -192,11 +215,35 @@ impl<T: Iterator<Item=char>> Lexer<T> {
         }
     }
 
+    pub fn peek_span(&mut self, offset: usize) -> Option<&Span> {
+        self.buffer_up_to(offset);
+
+        if offset < self.buffered.len() {
+            Some(&self.buffered[offset].1)
+        } else {
+            None
+        }
+    }
+
     pub fn step(&mut self) {
         self.buffer_up_to(0);
 
         if self.buffered.len() > 0 {
             self.buffered.pop_front();
+        }
+    }
+
+    pub fn step_newline(&mut self) {
+        self.step();
+
+        while let Some(Token::NewLine) = self.peek(0) {
+            self.step();
+        }
+    }
+
+    pub fn consume_newline(&mut self) {
+        while let Some(Token::NewLine) = self.peek(0) {
+            self.step();
         }
     }
 }
