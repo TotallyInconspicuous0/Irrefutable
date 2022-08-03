@@ -20,6 +20,12 @@ pub struct Span {
     pub length: usize
 }
 
+impl Span {
+    pub fn extend_to(&mut self, end: usize) {
+        self.length = end - self.start;
+    }
+}
+
 pub struct IoBytesCharReader<T: Iterator<Item=Result<u8, std::io::Error>>> {
     bytes: Peekable<T>
 }
@@ -213,6 +219,10 @@ impl<T: Iterator<Item=char>> Lexer<T> {
         } else {
             None
         }
+    }
+
+    pub fn tell(&self) -> usize {
+        self.chars_offset
     }
 
     pub fn peek_span(&mut self, offset: usize) -> Option<&Span> {

@@ -1,4 +1,4 @@
-use crate::lexer::{Lexer, Span, Token};
+use crate::{lexer::{Lexer, Span, Token}, ast::{AstType, Binding, Expr, BinaryOp, FunctionDecl, FunctionCase, TopLevelDecl}};
 
 pub struct SyntaxError {
     message: String,
@@ -28,26 +28,23 @@ pub enum ParseResult<T> {
     Err(SyntaxError)
 }
 
-#[derive(Debug)]
-pub enum Type {
-    Function(Box<Type>, Box<Type>),
-    Name(String)
-}
-
-impl Type {
-    fn parse_primary<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<Type> {
+impl AstType {
+    fn parse_primary<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<AstType> {
         match lexer.peek(0) {
             Some(Token::Identifier(name)) => {
                 let name = name.to_owned();
+                let span = lexer.peek_span(0).unwrap().clone();
                 lexer.step();
-                ParseResult::Match(Type::Name(name))
+                ParseResult::Match(AstType::Name(span, name))
             }
             _ => ParseResult::NoMatch
         }
     }
 
-    fn parse_arrow<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<Type> {
-        let primary = match Type::parse_primary(lexer) {
+    fn parse_arrow<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<AstType> {
+        let call_start = lexer.peek_span(0).cloned();
+
+        let primary = match AstType::parse_primary(lexer) {
             ParseResult::Err(err) => return ParseResult::Err(err),
             ParseResult::NoMatch => return ParseResult::NoMatch,
             ParseResult::Match(primary) => primary,
@@ -57,49 +54,41 @@ impl Type {
             Some(Token::Arrow) => {
                 lexer.step();
 
-                let rhs = match Type::parse_arrow(lexer) {
+                let rhs = match AstType::parse_arrow(lexer) {
                     ParseResult::Err(err) => return ParseResult::Err(err),
                     ParseResult::NoMatch => return ParseResult::Err(SyntaxError::new("Expected rhs to arrow type", lexer.peek_span(0))),
                     ParseResult::Match(primary) => primary,
                 };
 
-                ParseResult::Match(Type::Function(Box::new(primary), Box::new(rhs)))
+                let mut call_span = call_start.unwrap();
+                call_span.extend_to(lexer.tell());
+
+                ParseResult::Match(AstType::Function(call_span, Box::new(primary), Box::new(rhs)))
             }
             _ => ParseResult::Match(primary)
         }
     }
 
-    pub fn parse<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<Type> {
-        Type::parse_arrow(lexer)
+    pub fn parse<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<AstType> {
+        AstType::parse_arrow(lexer)
     }
 }
 
-#[derive(Debug)]
-pub struct FunctionDecl {
-    pub name: String,
-    pub signature: Type
-}
-
 impl FunctionDecl {
-    pub fn parse_from_name<T: Iterator<Item=char>>(name: String, lexer: &mut Lexer<T>) -> ParseResult<FunctionDecl> {
-        let signature = match Type::parse(lexer) {
+    pub fn parse_from_name<T: Iterator<Item=char>>(name: String, mut start: Span, lexer: &mut Lexer<T>) -> ParseResult<FunctionDecl> {
+        let signature = match AstType::parse(lexer) {
             ParseResult::NoMatch => return ParseResult::Err(SyntaxError::new("Could not parse type", lexer.peek_span(0))),
             ParseResult::Err(err) => return ParseResult::Err(err),
             ParseResult::Match(sig) => sig,
         };
+        start.extend_to(lexer.tell());
 
         lexer.consume_newline();
 
         ParseResult::Match(FunctionDecl {
-            name, signature
+            span: start, name, signature
         })
     }
-}
-
-#[derive(Debug)]
-pub enum Binding {
-    Number(String),
-    Name(String)
 }
 
 impl Binding {
@@ -107,31 +96,19 @@ impl Binding {
         match lexer.peek(0) {
             Some(Token::Identifier(name)) => {
                 let name = name.to_owned();
+                let span = lexer.peek_span(0).unwrap().clone();
                 lexer.step();
-                ParseResult::Match(Binding::Name(name))
+                ParseResult::Match(Binding::Name(span, name))
             }
             Some(Token::Number(num)) => {
                 let num = num.to_owned();
+                let span = lexer.peek_span(0).unwrap().clone();
                 lexer.step();
-                ParseResult::Match(Binding::Number(num))
+                ParseResult::Match(Binding::Number(span, num))
             }
             _ => ParseResult::NoMatch
         }
     }
-}
-
-#[derive(Debug)]
-pub enum BinaryOp {
-    Add, Sub
-}
-
-#[derive(Debug)]
-pub enum Expr {
-    Name(String),
-    Number(String),
-    Call(Box<Expr>, Box<Expr>),
-    Binary(Box<Expr>, Box<Expr>, BinaryOp),
-    Do(Vec<Expr>)
 }
 
 impl Expr {
@@ -139,13 +116,15 @@ impl Expr {
         match lexer.peek(0) {
             Some(Token::Identifier(name)) => {
                 let name = name.to_owned();
+                let span = lexer.peek_span(0).unwrap().clone();
                 lexer.step();
-                ParseResult::Match(Expr::Name(name))
+                ParseResult::Match(Expr::Name(span, name))
             }
             Some(Token::Number(num)) => {
                 let num = num.to_owned();
+                let span = lexer.peek_span(0).unwrap().clone();
                 lexer.step();
-                ParseResult::Match(Expr::Number(num))
+                ParseResult::Match(Expr::Number(span, num))
             }
             Some(Token::OpenParen) => {
                 lexer.step_newline();
@@ -172,24 +151,31 @@ impl Expr {
     }
 
     fn parse_call<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<Expr> {
+        let span = lexer.peek_span(0).cloned();
+
         let mut expr = match Expr::parse_primary(lexer) {
             ParseResult::NoMatch => return ParseResult::NoMatch,
             ParseResult::Err(err) => return ParseResult::Err(err),
             ParseResult::Match(primary) => primary
         };
 
+        let mut span = span.unwrap();
         loop {
             let arg = match Expr::parse_primary(lexer) {
                 ParseResult::NoMatch => return ParseResult::Match(expr),
                 ParseResult::Err(err) => return ParseResult::Err(err),
                 ParseResult::Match(arg) => arg
             };
+
+            span.extend_to(lexer.tell());
     
-            expr = Expr::Call(Box::new(expr), Box::new(arg));
+            expr = Expr::Call(span.clone(), Box::new(expr), Box::new(arg));
         }
     }
 
     fn parse_add_sub<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<Expr> {
+        let span = lexer.peek_span(0).cloned();
+
         let lhs = match Expr::parse_call(lexer) {
             ParseResult::NoMatch => return ParseResult::NoMatch,
             ParseResult::Err(err) => return ParseResult::Err(err),
@@ -214,7 +200,10 @@ impl Expr {
             ParseResult::Match(rhs) => rhs
         };
 
-        ParseResult::Match(Expr::Binary(Box::new(lhs), Box::new(rhs), op))
+        let mut span = span.unwrap();
+        span.extend_to(lexer.tell());
+
+        ParseResult::Match(Expr::Binary(span, Box::new(lhs), Box::new(rhs), op))
     }
 
     fn parse_do_then<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<Expr> {
@@ -222,6 +211,7 @@ impl Expr {
             Some(Token::DoKeyword) => {}
             _ => return Expr::parse_add_sub(lexer)
         }
+        let mut span = lexer.peek_span(0).unwrap().clone();
         lexer.step();
 
         let mut steps = Vec::new();
@@ -232,6 +222,7 @@ impl Expr {
                 ParseResult::NoMatch => return ParseResult::Err(SyntaxError::new("Expected expression in do/then statement", lexer.peek_span(0))),
                 ParseResult::Match(step) => step
             });
+            span.extend_to(lexer.tell());
             lexer.consume_newline();
 
             match lexer.peek(0) {
@@ -240,7 +231,7 @@ impl Expr {
             }
         }
 
-        ParseResult::Match(Expr::Do(steps))
+        ParseResult::Match(Expr::Do(span, steps))
     }
 
     pub fn parse<T: Iterator<Item=char>>(lexer: &mut Lexer<T>) -> ParseResult<Expr> {
@@ -248,15 +239,8 @@ impl Expr {
     }
 }
 
-#[derive(Debug)]
-pub struct FunctionCase {
-    pub name: String,
-    pub bindings: Vec<Binding>,
-    pub expr: Expr
-}
-
 impl FunctionCase {
-    pub fn parse_from_name<T: Iterator<Item=char>>(name: String, lexer: &mut Lexer<T>) -> ParseResult<FunctionCase> {
+    pub fn parse_from_name<T: Iterator<Item=char>>(name: String, mut span: Span, lexer: &mut Lexer<T>) -> ParseResult<FunctionCase> {
         let mut bindings = Vec::new();
 
         loop {
@@ -282,19 +266,14 @@ impl FunctionCase {
             ParseResult::NoMatch => return ParseResult::Err(SyntaxError::new("Expected expression", lexer.peek_span(0))),
             ParseResult::Match(expr) => expr
         };
+        span.extend_to(lexer.tell());
 
         lexer.consume_newline();
 
         ParseResult::Match(FunctionCase {
-            name, bindings, expr
+            span, name, bindings, expr
         })
     }
-}
-
-#[derive(Debug)]
-pub enum TopLevelDecl {
-    FunctionDecl(FunctionDecl),
-    FunctionDef(FunctionCase)
 }
 
 impl TopLevelDecl {
@@ -303,19 +282,20 @@ impl TopLevelDecl {
             Some(Token::Identifier(name)) => name.to_owned(),
             _ => return ParseResult::NoMatch
         };
+        let span = lexer.peek_span(0).unwrap().clone();
         lexer.step();
         
         match lexer.peek(0) {
             Some(Token::DblColon) => {
                 lexer.step();
-                match FunctionDecl::parse_from_name(name, lexer) {
+                match FunctionDecl::parse_from_name(name, span, lexer) {
                     ParseResult::NoMatch => unreachable!(),
                     ParseResult::Match(node) => ParseResult::Match(TopLevelDecl::FunctionDecl(node)),
                     ParseResult::Err(err) => ParseResult::Err(err)
                 }
             }
             _ => {
-                match FunctionCase::parse_from_name(name, lexer) {
+                match FunctionCase::parse_from_name(name, span, lexer) {
                     ParseResult::NoMatch => unreachable!(),
                     ParseResult::Match(node) => ParseResult::Match(TopLevelDecl::FunctionDef(node)),
                     ParseResult::Err(err) => ParseResult::Err(err)
